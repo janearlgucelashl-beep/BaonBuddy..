@@ -73,6 +73,7 @@ header {
 .header-logo { display: flex; align-items: center; gap: 10px; }
 .header-logo h1 { font-size: 20px; font-weight: 800; margin: 0; background: linear-gradient(45deg, var(--primary), var(--primary-dark)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
 .cyan-icon { color: var(--primary); }
+.header-actions { display: flex; align-items: center; gap: 12px; }
 
 #screen-container {
     flex: 1;

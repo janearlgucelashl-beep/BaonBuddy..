@@ -1,34 +1,59 @@
 import { Store } from './store.js';
 
 // --- State & Constants ---
-let state = Store.load();
+let state = null;
 let currentPlanId = null;
 let globalChart = null;
 let planChart = null;
 let planHistoryChart = null;
 
-// Initialize missing state props
-state.history = state.history || [];
-state.plans = state.plans || [];
-state.totalSavings = state.totalSavings || 0;
-
 // --- Helper Functions ---
+function formatCurrency(val) {
+    const symbol = state?.settings?.currency || '₱';
+    return `${symbol}${parseFloat(val || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function refreshPlanTarget(plan) {
     if (!plan.dayActive) return;
-    // If not in manual mode, always recalculate target based on current logic/rules
     if (!plan.manualSavingsMode) {
         plan.dailySavingsGoal = calculateRequiredDaily(plan, plan.dailyAllowance);
     }
 }
 
-function getTodayStr() {
-    // Strictly uses Philippines Time (Asia/Manila)
-    return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+function getCurrentLogicalDate() {
+    const { timezone, resetTime } = state.settings;
+    const now = new Date();
+    // Use Intl to get the current date/time in the target timezone
+    const formatter = new Intl.DateTimeFormat('en-US', {
+        timeZone: timezone,
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    });
+    
+    const parts = formatter.formatToParts(now);
+    const d = {};
+    parts.forEach(p => d[p.type] = p.value);
+    
+    // Construct a Date object for the "wall time" in that timezone
+    const currentH = parseInt(d.hour);
+    const currentM = parseInt(d.minute);
+    const [resetH, resetM] = resetTime.split(':').map(Number);
+    
+    // YYYY-MM-DD
+    const isoStr = `${d.year}-${d.month}-${d.day}`;
+    let logicalDate = new Date(isoStr + 'T00:00:00');
+    
+    // If current wall time is before the reset time, it's still "yesterday" logically
+    if (currentH < resetH || (currentH === resetH && currentM < resetM)) {
+        logicalDate.setDate(logicalDate.getDate() - 1);
+    }
+    
+    return logicalDate.toLocaleDateString('en-CA');
 }
 
-function getManilaDate() {
-    // Get current date string in Manila and create a local Date at midnight
-    const str = getTodayStr();
+function getSettingsDate() {
+    // Returns a Date object for the START of the current logical day
+    const str = getCurrentLogicalDate();
     return new Date(str + 'T00:00:00');
 }
 
@@ -96,18 +121,14 @@ function countCalculationDays(start, end, exclusions = []) {
 }
 
 function calculateRequiredDaily(plan, allowance) {
-    const today = getManilaDate();
-    today.setHours(0, 0, 0, 0);
+    const today = getSettingsDate();
 
-    // Rule: If today falls inside an exclusion range, requiredSavings is 0
     if (isDateInExclusions(today, plan.exclusions || [])) {
         return 0;
     }
 
-    // Indefinite Mode Rule: No End Date
     if (plan.useEndDate === false) {
         if (!plan.manualSavingsMode) {
-            // Target is 50% of today's allowance
             return allowance * 0.5;
         }
         return plan.dailySavingsGoal || 0;
@@ -115,28 +136,32 @@ function calculateRequiredDaily(plan, allowance) {
 
     if (!plan.goal) return 0;
 
-    const end = new Date(plan.endDate);
-    end.setHours(0, 0, 0, 0);
+    const end = new Date(plan.endDate + 'T00:00:00');
     
     if (today > end) return 0;
     
-    // Remaining days counting Monday to Friday only (excluding exclusion periods)
     const daysLeft = countCalculationDays(today, end, plan.exclusions || []);
-    if (daysLeft <= 0) return allowance; // Should save everything if it's the last day
+    if (daysLeft <= 0) return allowance;
     
-    // The Formula: (Goal - Total Savings) / Days Left
-    const currentSavings = plan.totalSaved || 0;
-    const remainingNeeded = plan.goal - currentSavings;
+    const A = Math.max(0, plan.goal - (plan.totalSaved || 0));
+    const D = daysLeft;
     
-    let target = Math.max(0, remainingNeeded / daysLeft);
+    const Q = Math.floor(A / D);
+    const R = A % D;
 
-    // Special User Rule: if end date is on, manual savings is off, allowance >= 80, and target < 50
-    // add 20% of allowance to the target.
+    const possibleTargets = [];
+    if (D - R > 0) possibleTargets.push(Q);
+    if (R > 0) possibleTargets.push(Q + 1);
+    
+    let target = possibleTargets.length > 0 ? Math.min(...possibleTargets) : 0;
+
     if (plan.useEndDate !== false && !plan.manualSavingsMode && allowance >= 80 && target < 50) {
-        target += (allowance * 0.20);
+        const basePercent = 20;
+        const drop = 49 - Math.floor(target);
+        const totalPercent = basePercent + Math.max(0, drop);
+        target += (allowance * (totalPercent / 100));
     }
     
-    // The target is capped by what you actually have today (today's allowance)
     return Math.min(allowance, target);
 }
 
@@ -148,8 +173,7 @@ function calculateProjectedEndDate(plan) {
     
     const daysNeeded = Math.ceil(remainingNeeded / plan.dailySavingsGoal);
     
-    let cur = getManilaDate();
-    cur.setHours(0, 0, 0, 0);
+    let cur = getSettingsDate();
     // Start counting from tomorrow
     cur.setDate(cur.getDate() + 1);
     
@@ -183,7 +207,7 @@ function saveState() {
 
 // --- Daily Logic ---
 function checkDailyReset() {
-    const todayStr = getTodayStr();
+    const todayStr = getCurrentLogicalDate();
     if (state.lastLoginDate !== todayStr) {
         state.plans.forEach(plan => {
             if (plan.dayActive) {
@@ -288,11 +312,10 @@ function renderPlans() {
         return;
     }
 
-    const today = getManilaDate();
-    today.setHours(0,0,0,0);
+    const today = getSettingsDate();
 
     list.innerHTML = state.plans.map(p => {
-        const startDate = new Date(p.startDate);
+        const startDate = new Date(p.startDate + 'T00:00:00');
         const isPending = today < startDate;
         const progress = p.goal ? Math.min(100, ((p.totalSaved || 0) / p.goal) * 100) : 0;
         
@@ -301,7 +324,7 @@ function renderPlans() {
                 <div style="flex:1">
                     <h3>${p.name}</h3>
                     <p>${isPending ? 'Starts ' + p.startDate : 'Target: ' + p.endDate}</p>
-                    <div style="margin-top:8px; font-weight:800; color:var(--primary-dark)">₱${(p.totalSaved || 0).toLocaleString()} <span style="font-weight:400; font-size:11px; color:var(--text-light)">SAVED</span></div>
+                    <div style="margin-top:8px; font-weight:800; color:var(--primary-dark)">${formatCurrency(p.totalSaved || 0)} <span style="font-weight:400; font-size:11px; color:var(--text-light)">SAVED</span></div>
                 </div>
                 <div style="text-align:right">
                     <div style="background:var(--secondary); width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; margin-left:auto; margin-bottom:5px; box-shadow:0 4px 8px rgba(251, 192, 45, 0.3)">
@@ -337,16 +360,15 @@ function updatePlanHubUI() {
             document.getElementById('allowance-setup-ui').classList.add('hidden');
             document.getElementById('day-active-ui').classList.remove('hidden');
             
-            // Show/hide manual savings edit button
             const manualEditBtn = document.getElementById('edit-manual-savings-btn');
             manualEditBtn.classList.toggle('hidden', !plan.manualSavingsMode);
 
             const remaining = plan.dailyAllowance - plan.dailySpent;
             const target = plan.dailySavingsGoal || 0;
             
-            document.getElementById('ui-remaining').innerText = `₱${remaining.toFixed(2)}`;
-            document.getElementById('ui-savings').innerText = `₱${target.toFixed(2)}`;
-            document.getElementById('ui-spent').innerText = `₱${(plan.dailySpent || 0).toFixed(2)}`;
+            document.getElementById('ui-remaining').innerText = formatCurrency(remaining);
+            document.getElementById('ui-savings').innerText = formatCurrency(target);
+            document.getElementById('ui-spent').innerText = formatCurrency(plan.dailySpent || 0);
         } else {
             document.getElementById('allowance-setup-ui').classList.remove('hidden');
             document.getElementById('day-active-ui').classList.add('hidden');
@@ -400,7 +422,7 @@ function renderProducts() {
         <div class="product-item">
             <button class="btn-del-prod btn-icon" onclick="window.deleteProduct(${idx})"><i data-lucide="x" size="12"></i></button>
             <h4>${prod.name}</h4>
-            <p>₱${prod.price.toFixed(2)}</p>
+            <p>${formatCurrency(prod.price)}</p>
             <button class="btn-buy-mini" onclick="window.buyProduct(${idx})" ${!plan.dayActive ? 'disabled' : ''}>Buy</button>
         </div>
     `).join('');
@@ -413,14 +435,12 @@ function renderPlanReports() {
     
     document.getElementById('plan-progress-bar').style.width = `${progress}%`;
     
-    // UI state for Indefinite vs Fixed mode
     const isIndefinite = plan.useEndDate === false;
     document.getElementById('stat-days-left-group').classList.toggle('hidden', isIndefinite);
     document.getElementById('stat-projected-group').classList.toggle('hidden', !isIndefinite);
 
     if (!isIndefinite) {
-        // Calculate actual working days left (M-F minus exclusions)
-        const today = getManilaDate();
+        const today = getSettingsDate();
         const workingDaysLeft = countCalculationDays(today, plan.endDate, plan.exclusions || []);
         document.getElementById('stat-days-left').innerText = workingDaysLeft;
     } else {
@@ -428,15 +448,14 @@ function renderPlanReports() {
         document.getElementById('stat-projected-date').innerText = projected || 'TBD';
     }
 
-    document.getElementById('stat-debt').innerText = `₱${(plan.penaltyDebt || 0).toFixed(2)}`;
+    document.getElementById('stat-debt').innerText = formatCurrency(plan.penaltyDebt || 0);
     
-    // Check if there's a custom display for saved amount
     const savedEl = document.getElementById('stat-total-saved') || null;
-    if (savedEl) savedEl.innerText = `₱${(plan.totalSaved || 0).toFixed(2)}`;
+    if (savedEl) savedEl.innerText = formatCurrency(plan.totalSaved || 0);
 
     if (plan.dayActive) {
         const rec = plan.dailySavingsGoal || 0;
-        document.getElementById('plan-recommendation').innerText = `Today's Target: ₱${rec.toFixed(2)}`;
+        document.getElementById('plan-recommendation').innerText = `Today's Target: ${formatCurrency(rec)}`;
     } else {
         document.getElementById('plan-recommendation').innerText = "Set today's allowance to see target.";
     }
@@ -489,7 +508,7 @@ function renderPlanReports() {
 }
 
 function renderGlobalReports() {
-    document.getElementById('total-savings-amount').innerText = `₱${state.totalSavings.toFixed(2)}`;
+    document.getElementById('total-savings-amount').innerText = formatCurrency(state.totalSavings);
     
     const ctx = document.getElementById('savings-chart');
     if (globalChart) globalChart.destroy();
@@ -520,7 +539,7 @@ function renderGlobalReports() {
         <div class="card">
             <div style="display:flex; justify-content:space-between">
                 <strong>${p.name}</strong>
-                <span>₱${(p.totalSaved || 0).toFixed(2)}</span>
+                <span>${formatCurrency(p.totalSaved || 0)}</span>
             </div>
             <div class="progress-container">
                 <div class="progress-bar" style="width: ${p.goal ? (p.totalSaved / p.goal * 100) : 0}%"></div>
@@ -539,7 +558,12 @@ function setupEvents() {
     };
 
     document.querySelectorAll('.nav-item').forEach(b => {
-        b.onclick = () => showScreen(b.dataset.screen);
+        b.onclick = () => {
+            if (b.dataset.screen === 'home-screen' || b.dataset.screen === 'reports-screen') {
+                document.getElementById('settings-global-screen').classList.remove('active');
+            }
+            showScreen(b.dataset.screen);
+        }
     });
 
     document.querySelectorAll('.tab-btn').forEach(b => {
@@ -547,6 +571,41 @@ function setupEvents() {
     });
 
     document.getElementById('back-to-home').onclick = () => showScreen('home-screen');
+
+    // Global Settings
+    document.getElementById('open-settings-btn').onclick = () => {
+        document.getElementById('set-currency').value = state.settings.currency;
+        document.getElementById('set-timezone').value = state.settings.timezone;
+        document.getElementById('set-reset-time').value = state.settings.resetTime;
+        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+        document.getElementById('settings-global-screen').classList.add('active');
+    };
+    document.getElementById('back-from-settings').onclick = () => {
+        document.getElementById('settings-global-screen').classList.remove('active');
+        showScreen('home-screen');
+    };
+    document.getElementById('save-settings-btn').onclick = () => {
+        state.settings.currency = document.getElementById('set-currency').value || '₱';
+        state.settings.timezone = document.getElementById('set-timezone').value;
+        state.settings.resetTime = document.getElementById('set-reset-time').value;
+        state.plans.forEach(refreshPlanTarget);
+        saveState();
+        alert('Settings Saved!');
+        document.getElementById('settings-global-screen').classList.remove('active');
+        showScreen('home-screen');
+    };
+    document.getElementById('reset-settings-btn').onclick = () => {
+        if (!confirm('Reset settings to default?')) return;
+        state.settings = {
+            currency: '₱',
+            timezone: 'Asia/Manila',
+            resetTime: '00:00'
+        };
+        saveState();
+        alert('Settings Reset!');
+        document.getElementById('settings-global-screen').classList.remove('active');
+        showScreen('home-screen');
+    };
 
     // Create Plan
     document.getElementById('add-plan-btn').onclick = () => {
@@ -563,7 +622,8 @@ function setupEvents() {
         const start = document.getElementById('new-plan-start').value;
         const useEnd = document.getElementById('new-plan-use-end').checked;
         const end = useEnd ? document.getElementById('new-plan-end').value : null;
-        const goal = parseFloat(document.getElementById('new-plan-goal').value);
+        const goalInput = document.getElementById('new-plan-goal').value;
+        const goal = goalInput ? Math.floor(parseFloat(goalInput)) : 0;
 
         if (!name || !start || (useEnd && !end)) return alert('Name and required Dates are missing');
 
@@ -571,7 +631,7 @@ function setupEvents() {
             id: Date.now().toString(),
             name, startDate: start, endDate: end, 
             useEndDate: useEnd,
-            goal: goal || 0,
+            goal: goal,
             products: [], totalSaved: 0, totalSpent: 0, penaltyDebt: 0,
             estimateMode: true, manualSavingsMode: false, penaltyMode: true,
             dayActive: false, history: []
@@ -589,7 +649,8 @@ function setupEvents() {
         plan.startDate = document.getElementById('edit-start-date').value;
         plan.useEndDate = document.getElementById('toggle-use-end-date').checked;
         plan.endDate = plan.useEndDate ? document.getElementById('edit-end-date').value : null;
-        plan.goal = parseFloat(document.getElementById('edit-goal').value) || 0;
+        const goalInput = document.getElementById('edit-goal').value;
+        plan.goal = goalInput ? Math.floor(parseFloat(goalInput)) : 0;
         
         refreshPlanTarget(plan);
         saveState();
@@ -793,15 +854,24 @@ window.deleteExclusion = (idx) => {
 };
 
 // --- Start ---
-function init() {
+async function init() {
+    // Load state from IndexedDB
+    state = await Store.load();
+
+    // Initialize missing state props (extra safety)
+    state.history = state.history || [];
+    state.plans = state.plans || [];
+    state.totalSavings = state.totalSavings || 0;
+
     lucide.createIcons();
     checkDailyReset();
     
-    // Auto-refresh when app comes back to focus to catch 12AM flips
+    // Auto-refresh when app comes back to focus to catch reset time flips
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
             checkDailyReset();
             if (currentPlanId) updatePlanHubUI();
+            if (document.getElementById('reports-screen').classList.contains('active')) renderGlobalReports();
         }
     });
 

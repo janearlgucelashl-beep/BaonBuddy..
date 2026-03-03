@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-        <link rel="manifest" href="manifest.json">
+    <link rel="manifest" href="manifest.json">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>BaonBuddy</title>
@@ -9,11 +9,11 @@
  <script src="lucide.min.js"></script>
 <script src="chart.min.js"></script>
 </head>
-    <script>
+<script>
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("service-worker.js");
   }
-    </script>
+</script>
 <body>
     <div id="app">
         <!-- TOS Overlay -->
@@ -37,9 +37,14 @@
                     <i data-lucide="wallet" class="cyan-icon"></i>
                     <h1 id="view-title">BaonBuddy</h1>
                 </div>
-                <button id="add-plan-btn" class="btn-icon">
-                    <i data-lucide="plus-circle" size="20"></i>
-                </button>
+                <div class="header-actions">
+                    <button id="open-settings-btn" class="btn-icon">
+                        <i data-lucide="settings" size="20"></i>
+                    </button>
+                    <button id="add-plan-btn" class="btn-icon">
+                        <i data-lucide="plus-circle" size="20"></i>
+                    </button>
+                </div>
             </header>
 
             <div id="screen-container">
@@ -55,7 +60,7 @@
                     <div class="scrollable-area">
                         <div class="stats-card">
                         <small>Total Savings</small>
-                        <h2 id="total-savings-amount">₱0.00</h2>
+                        <h2 id="total-savings-amount">0.00</h2>
                     </div>
                     <div class="card chart-container">
                         <canvas id="savings-chart"></canvas>
@@ -106,15 +111,15 @@
                                     <div class="allowance-metrics">
                                         <div class="metric">
                                             <small>Remaining</small>
-                                            <p id="ui-remaining">₱0.00</p>
+                                            <p id="ui-remaining">0.00</p>
                                         </div>
                                         <div class="metric">
                                             <small>Savings Goal</small>
-                                            <p id="ui-savings">₱0.00</p>
+                                            <p id="ui-savings">0.00</p>
                                         </div>
                                         <div class="metric">
                                             <small>Spent</small>
-                                            <p id="ui-spent">₱0.00</p>
+                                            <p id="ui-spent">0.00</p>
                                         </div>
                                     </div>
                                     
@@ -124,7 +129,7 @@
                                     </div>
 
                                     <div class="other-purchase-row">
-                                        <input type="number" id="other-purchase-amount" placeholder="Other Expense (₱)">
+                                        <input type="number" id="other-purchase-amount" placeholder="Other Expense">
                                         <button id="buy-other-btn" class="btn-secondary">Buy</button>
                                     </div>
                                 </div>
@@ -150,11 +155,11 @@
                                 <div class="stats-grid-mini">
                                     <div class="stat-mini">
                                         <small>Total Saved</small>
-                                        <p id="stat-total-saved">₱0.00</p>
+                                        <p id="stat-total-saved">0.00</p>
                                     </div>
                                     <div class="stat-mini">
                                         <small>Total Debt</small>
-                                        <p id="stat-debt">₱0.00</p>
+                                        <p id="stat-debt">0.00</p>
                                     </div>
                                     <div class="stat-mini" id="stat-days-left-group">
                                         <small>Days Left (M-F)</small>
@@ -225,8 +230,8 @@
                                     </div>
                                 </div>
                                 <div class="form-group">
-                                    <label>Peso Goal (₱)</label>
-                                    <input type="number" id="edit-goal">
+                                    <label>Goal Amount</label>
+                                    <input type="number" id="edit-goal" step="1">
                                 </div>
 
                                 <hr>
@@ -256,6 +261,43 @@
                     <span>Reports</span>
                 </button>
             </nav>
+
+            <!-- Global Settings Screen -->
+            <section id="settings-global-screen" class="screen">
+                <div class="detail-header">
+                    <button id="back-from-settings" class="btn-text"><i data-lucide="chevron-left"></i></button>
+                    <h2>Global Settings</h2>
+                    <div class="placeholder"></div>
+                </div>
+                <div class="scrollable-area">
+                    <div class="card settings-list">
+                        <div class="form-group">
+                            <label>Currency Symbol</label>
+                            <input type="text" id="set-currency" placeholder="e.g. ₱, $, €">
+                        </div>
+                        <div class="form-group">
+                            <label>Timezone</label>
+                            <select id="set-timezone" style="width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 8px;">
+                                <option value="Asia/Manila">Asia/Manila (PHT)</option>
+                                <option value="UTC">UTC</option>
+                                <option value="America/New_York">America/New_York (EST)</option>
+                                <option value="Europe/London">Europe/London (GMT)</option>
+                                <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+                                <option value="Australia/Sydney">Australia/Sydney (AEST)</option>
+                                <option value="Asia/Singapore">Asia/Singapore (SGT)</option>
+                                <option value="Asia/Dubai">Asia/Dubai (GST)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Daily Reset Time</label>
+                            <input type="time" id="set-reset-time">
+                            <small style="color: var(--text-light); font-size: 10px;">The app will roll over to a new day at this time.</small>
+                        </div>
+                        <button id="save-settings-btn" class="btn-primary" style="margin-top: 15px;">Save Config</button>
+                        <button id="reset-settings-btn" class="btn-text" style="width: 100%; margin-top: 10px; color: var(--danger); font-weight: 800;">Reset to Default</button>
+                    </div>
+                </div>
+            </section>
         </main>
 
         <!-- Modals -->
@@ -287,7 +329,7 @@
                 </div>
                 <div class="form-group">
                     <label>Peso Goal (Optional)</label>
-                    <input type="number" id="new-plan-goal" placeholder="0.00">
+                    <input type="number" id="new-plan-goal" placeholder="0" step="1">
                 </div>
                 <div class="modal-actions">
                     <button id="close-plan-modal" class="btn-text">Cancel</button>
