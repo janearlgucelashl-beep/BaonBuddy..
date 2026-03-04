@@ -283,3 +283,4 @@ input:checked + .slider:before { transform: translateX(20px); }
 .progress-bar { background: var(--primary); height: 100%; width: 0; transition: width 0.3s; }
 .stats-grid-mini { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
 .stat-mini p { margin: 2px 0; font-weight: 700; }
+

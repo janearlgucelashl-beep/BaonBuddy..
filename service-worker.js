@@ -1,4 +1,4 @@
-const CACHE_NAME = "savings-tracker-v3";
+const CACHE_NAME = "savings-tracker-v4";
 
 const FILES_TO_CACHE = [
   "./",
@@ -11,7 +11,8 @@ const FILES_TO_CACHE = [
   "./Outfit-ExtraBold.woff2",
   "./Outfit-Bold.woff2",
   "./Outfit-Regular.woff2",
-  "./Outfit-SemiBold.woff2"
+  "./Outfit-SemiBold.woff2",
+  "./data-manager.js"
 ];
 
 // Install: cache files
@@ -47,4 +48,11 @@ self.addEventListener("fetch", event => {
       return response || fetch(event.request);
     })
   );
+});
+// Handle notification clicks
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    event.waitUntil(
+        clients.openWindow('./index.html')
+    );
 });

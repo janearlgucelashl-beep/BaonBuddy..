@@ -1,4 +1,5 @@
 import { Store } from './store.js';
+import { DataManager } from './data-manager.js';
 
 // --- State & Constants ---
 let state = null;
@@ -8,6 +9,26 @@ let planChart = null;
 let planHistoryChart = null;
 
 // --- Helper Functions ---
+// Request persistent storage to prevent the browser from clearing IndexedDB
+async function requestPersistentStorage() {
+    if (navigator.storage && navigator.storage.persist) {
+        const isPersisted = await navigator.storage.persist();
+        console.log(`Persisted storage granted: ${isPersisted}`);
+    }
+}
+// Helper to send PWA notifications
+async function sendNotification(title, body) {
+    if ("Notification" in window && Notification.permission === "granted") {
+        const registration = await navigator.serviceWorker.ready;
+        registration.showNotification(title, {
+            body: body,
+            icon: 'icon-192.png',
+            badge: 'icon-192.png',
+            vibrate: [200, 100, 200]
+        });
+    }
+}
+
 function formatCurrency(val) {
     const symbol = state?.settings?.currency || '₱';
     return `${symbol}${parseFloat(val || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -209,25 +230,34 @@ function saveState() {
 function checkDailyReset() {
     const todayStr = getCurrentLogicalDate();
     if (state.lastLoginDate !== todayStr) {
+        let inactivePlans = []; // Tracks plans that weren't set up yesterday
+
         state.plans.forEach(plan => {
             if (plan.dayActive) {
-                // Actual savings for the day is whatever was left from the allowance
                 const actualSavings = (plan.dailyAllowance || 0) - (plan.dailySpent || 0);
                 const target = plan.dailySavingsGoal || 0;
+                const wasCompletedBefore = (plan.totalSaved || 0) >= (plan.goal || 0);
                 
-                // Track debt in penalty mode if actual savings didn't meet the target
                 if (plan.penaltyMode && (plan.estimateMode || plan.manualSavingsMode)) {
                     if (actualSavings < target) {
                         plan.penaltyDebt = (plan.penaltyDebt || 0) + (target - actualSavings);
                     }
                 }
 
-                // Update totals (actualSavings can be negative if overspent)
+                // 1. Success Notification: If you saved money
+                if (actualSavings > 0) {
+                    sendNotification(`Savings Achieved: ${plan.name}`, `You successfully saved ${formatCurrency(actualSavings)} today!`);
+                }
+
                 state.totalSavings += actualSavings;
                 plan.totalSaved = (plan.totalSaved || 0) + actualSavings;
                 plan.totalSpent = (plan.totalSpent || 0) + (plan.dailySpent || 0);
 
-                // Plan-specific history tracking
+                // 2. Goal Notification: If this was the final push to reach the goal
+                if (!wasCompletedBefore && plan.goal > 0 && plan.totalSaved >= plan.goal) {
+                    sendNotification(`Goal Completed! 🏆`, `Congratulations! You've reached your total goal for "${plan.name}"!`);
+                }
+
                 plan.history = plan.history || [];
                 plan.history.push({
                     date: state.lastLoginDate || todayStr,
@@ -235,13 +265,20 @@ function checkDailyReset() {
                 });
                 if (plan.history.length > 30) plan.history.shift();
                 
-                // Reset daily
                 plan.dayActive = false;
                 plan.dailyAllowance = 0;
                 plan.dailySpent = 0;
                 plan.dailySavingsGoal = 0;
+            } else {
+                // Collect names of plans that were forgotten
+                inactivePlans.push(plan.name);
             }
         });
+
+        // 3. Reminder Notification: Alert about missed setups
+        if (inactivePlans.length > 0) {
+            sendNotification("Daily Setup Reminder", `You haven't set today's allowance for: ${inactivePlans.join(", ")}`);
+        }
 
         state.history.push({
             date: state.lastLoginDate || todayStr,
@@ -253,6 +290,7 @@ function checkDailyReset() {
         saveState();
     }
 }
+
 
 // --- Navigation ---
 function showScreen(screenId) {
@@ -380,6 +418,14 @@ function updatePlanHubUI() {
     }
 
     renderProducts();
+if ('setAppBadge' in navigator) {
+    const hasInactive = state.plans.some(p => !p.dayActive);
+    if (hasInactive) {
+        navigator.setAppBadge().catch(err => console.log(err));
+    } else {
+        navigator.clearAppBadge().catch(err => console.log(err));
+    }
+}
 }
 
 function renderExclusions() {
@@ -606,7 +652,34 @@ function setupEvents() {
         document.getElementById('settings-global-screen').classList.remove('active');
         showScreen('home-screen');
     };
+    // PASTE YOUR CODE HERE:
+    // --- Data Management (Backup & Restore) ---
+    document.getElementById('open-data-mgmt-btn').onclick = () => {
+        showScreen('data-mgmt-screen');
+    };
 
+    document.getElementById('back-from-data-mgmt').onclick = () => {
+        document.getElementById('data-mgmt-screen').classList.remove('active');
+        document.getElementById('settings-global-screen').classList.add('active');
+    };
+
+    document.getElementById('export-data-btn').onclick = async () => {
+        await DataManager.exportState(state);
+    };
+
+    document.getElementById('import-data-btn').onclick = async () => {
+        const fileInput = document.getElementById('import-file-input');
+        const textArea = document.getElementById('import-text-area');
+        
+        const importedData = await DataManager.importState(fileInput, textArea);
+        
+        if (importedData) {
+            state = importedData;
+            saveState();
+            alert('Data restored successfully! The app will now reload.');
+            window.location.reload(); 
+        }
+    };
     // Create Plan
     document.getElementById('add-plan-btn').onclick = () => {
         document.getElementById('plan-modal').classList.remove('hidden');
@@ -818,6 +891,7 @@ function setupEvents() {
         };
     };
     document.getElementById('confirm-cancel').onclick = () => document.getElementById('confirm-modal').classList.add('hidden');
+
 }
 
 // Global window helpers for dynamic HTML
@@ -855,6 +929,12 @@ window.deleteExclusion = (idx) => {
 
 // --- Start ---
 async function init() {
+    await requestPersistentStorage();
+
+    // Request Notification permission
+    if ("Notification" in window && Notification.permission === "default") {
+        await Notification.requestPermission();
+    }
     // Load state from IndexedDB
     state = await Store.load();
 
@@ -881,6 +961,6 @@ async function init() {
     }
     renderPlans();
     setupEvents();
-}
 
+}       
 init();
