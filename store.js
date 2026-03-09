@@ -65,7 +65,8 @@ export const Store = {
             settings: {
                 currency: '₱',
                 timezone: 'Asia/Manila',
-                resetTime: '00:00'
+                resetTime: '00:00',
+                excludedDays: [0, 6] // Default Sun, Sat
             },
             exclusionSets: []
         };

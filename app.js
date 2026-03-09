@@ -16,16 +16,17 @@ async function requestPersistentStorage() {
         console.log(`Persisted storage granted: ${isPersisted}`);
     }
 }
-// Helper to send PWA notifications
+// Helper to send notifications
 async function sendNotification(title, body) {
     if ("Notification" in window && Notification.permission === "granted") {
-        const registration = await navigator.serviceWorker.ready;
-        registration.showNotification(title, {
-            body: body,
-            icon: 'icon-192.png',
-            badge: 'icon-192.png',
-            vibrate: [200, 100, 200]
-        });
+        try {
+            new Notification(title, {
+                body: body,
+                icon: 'icon-192.png'
+            });
+        } catch (err) {
+            console.warn("Notification failed", err);
+        }
     }
 }
 
@@ -110,8 +111,8 @@ function isDateInExclusions(date, exclusions) {
 }
 
 function countCalculationDays(start, end, exclusions = []) {
-    // Counts only Monday to Friday (Mon-Fri)
-    // AND skips exclusion periods
+    // Counts days based on weekly exclusion settings
+    // AND skips specific exclusion periods
     let count = 0;
     // Ensure we work with clear midnight dates
     let cur = new Date(start);
@@ -125,15 +126,17 @@ function countCalculationDays(start, end, exclusions = []) {
 
     const mergedEx = mergeExclusions(exclusions);
 
+    const excludedWeekly = state.settings.excludedDays || [0, 6];
+
     while (cur <= last) {
         const dayNum = cur.getDay(); // 0 is Sun, 6 is Sat
-        const isWeekend = (dayNum === 0 || dayNum === 6);
+        const isExcludedWeekly = excludedWeekly.includes(dayNum);
         
         // Format cur to YYYY-MM-DD for exclusion check
         const dStr = cur.toLocaleDateString('en-CA');
         const isExcluded = mergedEx.some(ex => dStr >= ex.start && dStr <= ex.end);
         
-        if (!isWeekend && !isExcluded) {
+        if (!isExcludedWeekly && !isExcluded) {
             count++;
         }
         cur.setDate(cur.getDate() + 1);
@@ -143,10 +146,6 @@ function countCalculationDays(start, end, exclusions = []) {
 
 function calculateRequiredDaily(plan, allowance) {
     const today = getSettingsDate();
-
-    if (isDateInExclusions(today, plan.exclusions || [])) {
-        return 0;
-    }
 
     if (plan.useEndDate === false) {
         if (!plan.manualSavingsMode) {
@@ -162,9 +161,9 @@ function calculateRequiredDaily(plan, allowance) {
     if (today > end) return 0;
     
     const daysLeft = countCalculationDays(today, end, plan.exclusions || []);
-    if (daysLeft <= 0) return allowance;
-    
     const A = Math.max(0, plan.goal - (plan.totalSaved || 0));
+
+    if (daysLeft <= 0) return A;
     const D = daysLeft;
     
     const Q = Math.floor(A / D);
@@ -200,17 +199,18 @@ function calculateProjectedEndDate(plan) {
     
     let workingDaysFound = 0;
     const mergedEx = mergeExclusions(plan.exclusions || []);
+    const excludedWeekly = state.settings.excludedDays || [0, 6];
 
     // Safety counter to prevent infinite loops
     let safety = 0;
     while (workingDaysFound < daysNeeded && safety < 10000) {
         safety++;
         const dayNum = cur.getDay();
-        const isWeekend = (dayNum === 0 || dayNum === 6);
+        const isExcludedWeekly = excludedWeekly.includes(dayNum);
         const dStr = cur.toLocaleDateString('en-CA');
         const isExcluded = mergedEx.some(ex => dStr >= ex.start && dStr <= ex.end);
         
-        if (!isWeekend && !isExcluded) {
+        if (!isExcludedWeekly && !isExcluded) {
             workingDaysFound++;
         }
         
@@ -269,6 +269,7 @@ function checkDailyReset() {
                 plan.dailyAllowance = 0;
                 plan.dailySpent = 0;
                 plan.dailySavingsGoal = 0;
+                plan.dailyTempContributed = 0;
             } else {
                 // Collect names of plans that were forgotten
                 inactivePlans.push(plan.name);
@@ -378,8 +379,8 @@ function renderPlans() {
 
 function updatePlanHubUI() {
     const plan = state.plans.find(p => p.id === currentPlanId);
-    const today = new Date();
-    const startDate = new Date(plan.startDate);
+    const today = getSettingsDate();
+    const startDate = new Date(plan.startDate + 'T00:00:00');
     const isStarted = today >= startDate;
 
     // "This" tab state
@@ -401,12 +402,13 @@ function updatePlanHubUI() {
             const manualEditBtn = document.getElementById('edit-manual-savings-btn');
             manualEditBtn.classList.toggle('hidden', !plan.manualSavingsMode);
 
-            const remaining = plan.dailyAllowance - plan.dailySpent;
+            const remaining = plan.dailyAllowance - (plan.dailySpent || 0) - (plan.dailyTempContributed || 0);
             const target = plan.dailySavingsGoal || 0;
             
             document.getElementById('ui-remaining').innerText = formatCurrency(remaining);
             document.getElementById('ui-savings').innerText = formatCurrency(target);
             document.getElementById('ui-spent').innerText = formatCurrency(plan.dailySpent || 0);
+            document.getElementById('ui-temp-balance').innerText = formatCurrency(plan.tempSavings || 0);
         } else {
             document.getElementById('allowance-setup-ui').classList.remove('hidden');
             document.getElementById('day-active-ui').classList.add('hidden');
@@ -489,6 +491,10 @@ function renderPlanReports() {
         const today = getSettingsDate();
         const workingDaysLeft = countCalculationDays(today, plan.endDate, plan.exclusions || []);
         document.getElementById('stat-days-left').innerText = workingDaysLeft;
+        
+        const dayLabel = document.querySelector('#stat-days-left-group small');
+        const count = (state.settings.excludedDays || [0, 6]).length;
+        dayLabel.innerText = `Days Left (${7 - count}d/wk)`;
     } else {
         const projected = calculateProjectedEndDate(plan);
         document.getElementById('stat-projected-date').innerText = projected || 'TBD';
@@ -623,9 +629,27 @@ function setupEvents() {
         document.getElementById('set-currency').value = state.settings.currency;
         document.getElementById('set-timezone').value = state.settings.timezone;
         document.getElementById('set-reset-time').value = state.settings.resetTime;
+        
+        // Populate weekly days
+        const excluded = state.settings.excludedDays || [0, 6];
+        document.querySelectorAll('#weekly-days-container input').forEach(cb => {
+            cb.checked = excluded.includes(parseInt(cb.value));
+        });
+
         document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
         document.getElementById('settings-global-screen').classList.add('active');
     };
+
+    // Limit Weekly Days Selection
+    document.querySelectorAll('#weekly-days-container input').forEach(cb => {
+        cb.onchange = () => {
+            const checked = document.querySelectorAll('#weekly-days-container input:checked');
+            if (checked.length > 3) {
+                cb.checked = false;
+                alert("You can only exclude up to 3 days per week.");
+            }
+        };
+    });
     document.getElementById('back-from-settings').onclick = () => {
         document.getElementById('settings-global-screen').classList.remove('active');
         showScreen('home-screen');
@@ -634,6 +658,13 @@ function setupEvents() {
         state.settings.currency = document.getElementById('set-currency').value || '₱';
         state.settings.timezone = document.getElementById('set-timezone').value;
         state.settings.resetTime = document.getElementById('set-reset-time').value;
+        
+        const excluded = [];
+        document.querySelectorAll('#weekly-days-container input:checked').forEach(cb => {
+            excluded.push(parseInt(cb.value));
+        });
+        state.settings.excludedDays = excluded;
+
         state.plans.forEach(refreshPlanTarget);
         saveState();
         alert('Settings Saved!');
@@ -652,7 +683,7 @@ function setupEvents() {
         document.getElementById('settings-global-screen').classList.remove('active');
         showScreen('home-screen');
     };
-    // PASTE YOUR CODE HERE:
+
     // Data Management
     document.getElementById('open-data-mgmt-btn').onclick = () => {
         document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -883,7 +914,7 @@ function setupEvents() {
         const cost = parseFloat(costInput) || 0;
         if (cost <= 0) return;
 
-        const remaining = plan.dailyAllowance - plan.dailySpent;
+        const remaining = plan.dailyAllowance - (plan.dailySpent || 0) - (plan.dailyTempContributed || 0);
         if (cost > remaining) {
             if (!confirm('This exceeds your remaining allowance. Continue?')) return;
         }
@@ -943,6 +974,46 @@ function setupEvents() {
     };
     document.getElementById('confirm-cancel').onclick = () => document.getElementById('confirm-modal').classList.add('hidden');
 
+    // Temp Savings Events
+    document.getElementById('save-temp-btn').onclick = () => {
+        const plan = state.plans.find(p => p.id === currentPlanId);
+        const amount = parseFloat(document.getElementById('temp-save-amount').value) || 0;
+        if (amount <= 0) return;
+
+        const maxAllowed = (plan.dailyAllowance - plan.dailySavingsGoal) - (plan.dailySpent || 0) - (plan.dailyTempContributed || 0);
+        
+        if (amount > maxAllowed) {
+            alert(`You can only save up to ${formatCurrency(maxAllowed)} to Temp Savings (Allowance - Target - Spent).`);
+            return;
+        }
+
+        plan.tempSavings = (plan.tempSavings || 0) + amount;
+        plan.dailyTempContributed = (plan.dailyTempContributed || 0) + amount;
+        
+        document.getElementById('temp-save-amount').value = '';
+        saveState();
+        updatePlanHubUI();
+    };
+
+    document.getElementById('extract-temp-btn').onclick = () => {
+        const plan = state.plans.find(p => p.id === currentPlanId);
+        const balance = plan.tempSavings || 0;
+        if (balance <= 0) return alert("Temporary savings pot is empty.");
+
+        const extractVal = prompt(`Enter amount to extract (Max: ${formatCurrency(balance)}):`, balance);
+        if (extractVal === null || extractVal === "" || isNaN(parseFloat(extractVal))) return;
+
+        const amount = parseFloat(extractVal);
+        if (amount > balance) return alert("Cannot extract more than current balance.");
+        if (amount <= 0) return;
+
+        plan.tempSavings -= amount;
+        plan.dailyTempContributed = (plan.dailyTempContributed || 0) - amount;
+
+        saveState();
+        updatePlanHubUI();
+    };
+
     // Set Editor Events
     document.getElementById('save-set-btn').onclick = () => {
         const id = document.getElementById('excl-set-editor-modal').dataset.editingId;
@@ -967,7 +1038,7 @@ function setupEvents() {
     };
     document.getElementById('add-range-to-set-btn').onclick = () => {
         const container = document.getElementById('set-editor-ranges');
-        if (container.children.length >= 5) return alert("Maximum 5 ranges allowed.");
+        if (container.children.length >= 100) return alert("Maximum 100 ranges allowed.");
         addRangeRowToEditor();
     };
     document.getElementById('close-set-editor-modal').onclick = () => {
@@ -1078,7 +1149,7 @@ window.deleteProduct = (idx) => {
 window.buyProduct = (idx) => {
     const plan = state.plans.find(p => p.id === currentPlanId);
     const prod = plan.products[idx];
-    const remaining = plan.dailyAllowance - plan.dailySpent;
+    const remaining = plan.dailyAllowance - (plan.dailySpent || 0) - (plan.dailyTempContributed || 0);
     // Allow overspending if they really want to, which will affect savings
     if (prod.price > remaining) {
         if (!confirm('This exceeds your remaining allowance. Continue?')) return;

@@ -1,4 +1,4 @@
-const CACHE_NAME = "savings-tracker-v5";
+const CACHE_NAME = "savings-tracker-v6";
 
 const FILES_TO_CACHE = [
   "./",

@@ -132,6 +132,20 @@
                                         <input type="number" id="other-purchase-amount" placeholder="Other Expense">
                                         <button id="buy-other-btn" class="btn-secondary">Buy</button>
                                     </div>
+
+                                    <div id="temp-savings-ui" style="margin-top: 15px; padding-top: 15px; border-top: 1px dashed var(--border);">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                            <small style="text-transform: uppercase; font-weight: 800; color: var(--text-light); font-size: 10px;">Temp Savings Pot</small>
+                                            <span id="ui-temp-balance" style="font-weight: 800; color: var(--primary-dark); font-size: 14px;">₱0.00</span>
+                                        </div>
+                                        <div class="other-purchase-row" style="margin-top: 0;">
+                                            <input type="number" id="temp-save-amount" placeholder="Amount to Save">
+                                            <button id="save-temp-btn" class="btn-secondary" style="background: var(--primary); color: white; box-shadow: none;">Save</button>
+                                        </div>
+                                        <button id="extract-temp-btn" class="btn-text-small" style="width: 100%; justify-content: center; margin-top: 8px;">
+                                            <i data-lucide="external-link" size="14"></i> Extract from Temp Savings
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
 
@@ -298,6 +312,18 @@
                             <label>Daily Reset Time</label>
                             <input type="time" id="set-reset-time">
                             <small style="color: var(--text-light); font-size: 10px;">The app will roll over to a new day at this time.</small>
+                        </div>
+                        <div class="form-group">
+                            <label>Weekly Exclusion Days (Max 3)</label>
+                            <div id="weekly-days-container" style="display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;">
+                                <label class="day-chip"><input type="checkbox" value="0"> <span>Sun</span></label>
+                                <label class="day-chip"><input type="checkbox" value="1"> <span>Mon</span></label>
+                                <label class="day-chip"><input type="checkbox" value="2"> <span>Tue</span></label>
+                                <label class="day-chip"><input type="checkbox" value="3"> <span>Wed</span></label>
+                                <label class="day-chip"><input type="checkbox" value="4"> <span>Thu</span></label>
+                                <label class="day-chip"><input type="checkbox" value="5"> <span>Fri</span></label>
+                                <label class="day-chip"><input type="checkbox" value="6"> <span>Sat</span></label>
+                            </div>
                         </div>
                         <button id="save-settings-btn" class="btn-primary" style="margin-top: 15px;">Save Config</button>
                         <button id="open-excl-sets-btn" class="btn-secondary" style="width: 100%; margin-top: 15px; background: #fffde7; color: var(--text); border: 1px solid var(--secondary); box-shadow: none;">
