@@ -187,52 +187,80 @@ function countCalculationDays(start, end, exclusions = [], excludedWeekly = [0, 
 }
 
 function calculateRequiredDaily(plan, allowance, specificDate = null) {
+    return calculateRequiredDailyInternal(plan, allowance, specificDate, plan.totalSaved || 0);
+}
+
+function calculateRequiredDailyInternal(plan, allowance, specificDate = null, currentSaved = 0) {
     const targetDate = specificDate || getSettingsDate();
     const dateStr = targetDate.toLocaleDateString('en-CA');
     const dayNum = targetDate.getDay();
 
-    // 1. Check for Manual Date Overrides (Priority)
+    // 1. Priority Checks for "Today" (Return fixed amount immediately if today is an override)
     if (plan.manualDateOverrides) {
         const match = plan.manualDateOverrides.find(o => dateStr >= o.start && dateStr <= o.end);
         if (match) return match.amount;
     }
-
-    // 2. Check for Manual Weekly Overrides
     if (plan.manualWeeklyOverrides && plan.manualWeeklyOverrides[dayNum]) {
         const override = plan.manualWeeklyOverrides[dayNum];
         if (override.enabled) return override.amount;
     }
 
+    // If indefinite plan, just return standard logic
     if (plan.useEndDate === false) {
-        if (!plan.manualSavingsMode) {
-            return allowance * 0.5;
-        }
-        return plan.dailySavingsGoal || 0;
+        return !plan.manualSavingsMode ? (allowance * 0.5) : (plan.dailySavingsGoal || 0);
     }
 
     if (!plan.goal) return 0;
-
     const end = new Date(plan.endDate + 'T00:00:00');
-    
     if (targetDate > end) return 0;
-    
-    // Calculate days left excluding purely excluded days (not manual overrides)
-    const daysLeft = countCalculationDays(targetDate, end, plan.exclusions || [], plan.excludedDays || [0, 6]);
-    const A = Math.max(0, plan.goal - (plan.totalSaved || 0));
 
-    if (daysLeft <= 0) return A;
-    const D = daysLeft;
+    // --- Complex Calculation Loop ---
+    // Calculate future manual overrides total and remaining regular days
+    let futureManualTotal = 0;
+    let regularDaysCount = 0;
+    let iter = new Date(targetDate);
+    const exclusions = plan.exclusions || [];
+    const excludedWeekly = plan.excludedDays || [0, 6];
+    const dateOverrides = plan.manualDateOverrides || [];
+    const weeklyOverrides = plan.manualWeeklyOverrides || {};
+
+    while (iter <= end) {
+        const dStr = iter.toLocaleDateString('en-CA');
+        const dNum = iter.getDay();
+
+        const isExcluded = excludedWeekly.includes(dNum) || isDateInExclusions(iter, exclusions);
+        if (!isExcluded) {
+            // Check for overrides
+            const dOverride = dateOverrides.find(o => dStr >= o.start && dStr <= o.end);
+            const wOverride = weeklyOverrides[dNum] && weeklyOverrides[dNum].enabled ? weeklyOverrides[dNum] : null;
+
+            if (dOverride) {
+                futureManualTotal += dOverride.amount;
+            } else if (wOverride) {
+                futureManualTotal += wOverride.amount;
+            } else {
+                regularDaysCount++;
+            }
+        }
+        iter.setDate(iter.getDate() + 1);
+    }
+
+    // A = Needed - Already Saved - Guaranteed Future Special Savings
+    const A = Math.max(0, plan.goal - currentSaved - futureManualTotal);
+    const D = regularDaysCount;
+
+    if (D <= 0) return Math.min(allowance, A);
     
     const Q = Math.floor(A / D);
     const R = A % D;
-
     const possibleTargets = [];
     if (D - R > 0) possibleTargets.push(Q);
     if (R > 0) possibleTargets.push(Q + 1);
     
     let target = possibleTargets.length > 0 ? Math.min(...possibleTargets) : 0;
 
-    if (plan.useEndDate !== false && !plan.manualSavingsMode && allowance >= 80 && target < 50) {
+    // Small boost logic for lower goals
+    if (!plan.manualSavingsMode && allowance >= 80 && target < 50) {
         const basePercent = 20;
         const drop = 49 - Math.floor(target);
         const totalPercent = basePercent + Math.max(0, drop);
@@ -582,18 +610,23 @@ function renderManualWeeklyOverrides() {
     const container = document.getElementById('manual-weekly-container');
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const overrides = plan.manualWeeklyOverrides || {};
+    const excludedDays = plan.excludedDays || [];
 
     container.innerHTML = days.map((day, idx) => {
+        const isExcluded = excludedDays.includes(idx);
         const data = overrides[idx] || { enabled: false, amount: 0 };
+        // If excluded, force disabled override
+        const active = data.enabled && !isExcluded;
+        
         return `
-            <div class="manual-weekly-item">
-                <label class="day-chip" style="width: 100%; border-radius: 12px 12px 0 0;">
-                    <input type="checkbox" onchange="window.toggleManualWeekly(${idx}, this.checked)" ${data.enabled ? 'checked' : ''}>
+            <div class="manual-weekly-item ${isExcluded ? 'locked' : ''}">
+                <label class="day-chip" style="width: 100%; border-radius: 12px 12px 0 0; ${isExcluded ? 'opacity: 0.5; cursor: not-allowed;' : ''}">
+                    <input type="checkbox" onchange="window.toggleManualWeekly(${idx}, this.checked)" ${active ? 'checked' : ''} ${isExcluded ? 'disabled' : ''}>
                     <span>${day}</span>
                 </label>
-                <div class="weekly-amount-input ${!data.enabled ? 'disabled' : ''}">
+                <div class="weekly-amount-input ${!active ? 'disabled' : ''}">
                     <span>${state.settings.currency}</span>
-                    <input type="number" value="${data.amount}" onchange="window.updateManualWeeklyAmount(${idx}, this.value)" ${!data.enabled ? 'disabled' : ''}>
+                    <input type="number" value="${data.amount}" onchange="window.updateManualWeeklyAmount(${idx}, this.value)" ${!active ? 'disabled' : ''}>
                 </div>
             </div>
         `;
@@ -791,6 +824,20 @@ function setupEvents() {
             if (checked.length > 5) {
                 cb.checked = false;
                 alert("You can only exclude up to 5 days per week.");
+                return;
+            }
+
+            // Sync with Manual Weekly Overrides
+            const plan = state.plans.find(p => p.id === currentPlanId);
+            if (plan && container.id === 'edit-plan-weekly-days') {
+                const dayIdx = parseInt(cb.value);
+                if (cb.checked) {
+                    // If checked as exclusion, disable manual override for this day
+                    if (plan.manualWeeklyOverrides && plan.manualWeeklyOverrides[dayIdx]) {
+                        plan.manualWeeklyOverrides[dayIdx].enabled = false;
+                    }
+                    renderManualWeeklyOverrides();
+                }
             }
         };
     });
@@ -924,53 +971,64 @@ function setupEvents() {
         
         if (scenarioDate < today) return alert('Please select a future date');
         
-        // Sum savings day-by-day to account for varying overrides
-        let totalExpectedSavings = 0;
+        // Simulation loop
+        let simulatedTotalSaved = plan.totalSaved || 0;
         let iterDate = new Date(today);
-        iterDate.setDate(iterDate.getDate() + 1); // Start predicting from tomorrow
-
+        
+        // Determine baseline allowance for scenario (use current if set, otherwise 100)
         const baseAllowance = plan.dailyAllowance || 100;
-        // Standard goal if no override exists on a specific day
-        const defaultDailyGoal = plan.dailySavingsGoal || calculateRequiredDaily(plan, baseAllowance);
 
         while (iterDate <= scenarioDate) {
             const dStr = iterDate.toLocaleDateString('en-CA');
             const dNum = iterDate.getDay();
+            const isToday = iterDate.getTime() === today.getTime();
             
-            // Check for hard exclusions first (0 savings)
+            // Hard exclusions (Sat/Sun or specific exclusion ranges)
             const isHardExcluded = (plan.excludedDays || [0, 6]).includes(dNum) || isDateInExclusions(iterDate, plan.exclusions || []);
             
             if (!isHardExcluded) {
-                // Check overrides for this specific future date
-                let daySavings = defaultDailyGoal;
-                let hasOverride = false;
+                let daySavings = 0;
                 
-                // Priority 1: Date Overrides
-                if (plan.manualDateOverrides) {
-                    const match = plan.manualDateOverrides.find(o => dStr >= o.start && dStr <= o.end);
-                    if (match) {
-                        daySavings = match.amount;
-                        hasOverride = true;
+                if (isToday && plan.dayActive) {
+                    // Use the specific target set for today
+                    daySavings = plan.dailySavingsGoal || 0;
+                } else {
+                    let hasOverride = false;
+                    // 1. Date Overrides
+                    if (plan.manualDateOverrides) {
+                        const match = plan.manualDateOverrides.find(o => dStr >= o.start && dStr <= o.end);
+                        if (match) {
+                            daySavings = match.amount;
+                            hasOverride = true;
+                        }
+                    }
+                    // 2. Weekly Overrides
+                    if (!hasOverride && plan.manualWeeklyOverrides && plan.manualWeeklyOverrides[dNum]) {
+                        const override = plan.manualWeeklyOverrides[dNum];
+                        if (override.enabled) {
+                            daySavings = override.amount;
+                            hasOverride = true;
+                        }
+                    }
+                    // 3. Calculated or Baseline
+                    if (!hasOverride) {
+                        if (plan.manualSavingsMode) {
+                            // If user is in manual mode, use the last/current goal as the predicted daily amount
+                            daySavings = plan.dailySavingsGoal || 0;
+                        } else {
+                            // Simulator: recalculate target based on projected progress
+                            daySavings = calculateRequiredDailyInternal(plan, baseAllowance, iterDate, simulatedTotalSaved);
+                        }
                     }
                 }
-                
-                // Priority 2: Weekly Overrides
-                if (!hasOverride && plan.manualWeeklyOverrides && plan.manualWeeklyOverrides[dNum]) {
-                    const override = plan.manualWeeklyOverrides[dNum];
-                    if (override.enabled) {
-                        daySavings = override.amount;
-                    }
-                }
-                
-                totalExpectedSavings += daySavings;
+                simulatedTotalSaved += daySavings;
             }
             iterDate.setDate(iterDate.getDate() + 1);
         }
 
-        const totalExpected = (plan.totalSaved || 0) + totalExpectedSavings;
-        const progress = plan.goal ? Math.min(100, (totalExpected / plan.goal) * 100) : 100;
+        const progress = plan.goal ? Math.min(100, (simulatedTotalSaved / plan.goal) * 100) : 100;
 
-        document.getElementById('pred-total').innerText = formatCurrency(totalExpected);
+        document.getElementById('pred-total').innerText = formatCurrency(simulatedTotalSaved);
         document.getElementById('pred-progress-bar').style.width = `${progress}%`;
         document.getElementById('pred-percent').innerText = `${progress.toFixed(1)}% Complete`;
         document.getElementById('prediction-results').classList.remove('hidden');
@@ -1627,6 +1685,16 @@ window.toggleManualWeekly = (dayIdx, enabled) => {
     plan.manualWeeklyOverrides = plan.manualWeeklyOverrides || {};
     if (!plan.manualWeeklyOverrides[dayIdx]) plan.manualWeeklyOverrides[dayIdx] = { enabled: false, amount: 0 };
     plan.manualWeeklyOverrides[dayIdx].enabled = enabled;
+
+    // Condition: If manual override is enabled, it cannot be an exclusion day
+    if (enabled) {
+        plan.excludedDays = (plan.excludedDays || []).filter(d => d !== dayIdx);
+        // Refresh the UI chips for exclusion days
+        document.querySelectorAll('#edit-plan-weekly-days input').forEach(cb => {
+            if (parseInt(cb.value) === dayIdx) cb.checked = false;
+        });
+    }
+
     refreshPlanTarget(plan);
     saveState();
     renderManualWeeklyOverrides();
